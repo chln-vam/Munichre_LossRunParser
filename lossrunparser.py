@@ -1,21 +1,23 @@
 import streamlit as st
 import os
+import sys
 import json
 import tempfile
-import subprocess
-import shutil
 import csv
+import io
+import datetime
 import openpyxl
 import fitz
-import io
 from PIL import Image, ImageDraw
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import landscape, A3
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+from reportlab.lib.units import inch
 from azure.ai.documentintelligence import DocumentIntelligenceClient
 from azure.core.credentials import AzureKeyCredential
-import datetime
-
 
 # ==============================
-# FEATURE STORE (LOCAL REGISTRY)
+# FEATURE STORE
 # ==============================
 FEATURE_STORE_PATH = "feature_store/claims_json"
 os.makedirs(FEATURE_STORE_PATH, exist_ok=True)
@@ -28,32 +30,37 @@ if "focus_field" not in st.session_state:
     st.session_state.focus_field = None
 
 # ==============================
-# CUSTOM STYLING (DARK THEME)
+# STYLING
 # ==============================
 st.markdown("""
 <style>
     .stApp { background-color: #0d1117; color: #c9d1d9; }
-    .main-title { font-size: 26px; font-weight: 600; padding: 10px 0; border-bottom: 1px solid #30363d; margin-bottom: 20px; color: white; }
-
+    .main-title {
+        font-size: 26px; font-weight: 600; padding: 10px 0;
+        border-bottom: 1px solid #30363d; margin-bottom: 20px; color: white;
+        text-shadow: 0 0 10px rgba(88,166,255,0.7);
+    }
     .claim-card {
         background: #161b22; border: 1px solid #30363d; border-radius: 8px;
-        padding: 15px; margin-bottom: 10px; transition: 0.3s; cursor: pointer;
-        box-shadow: 0 0 0 transparent;
+        padding: 15px; margin-bottom: 10px; cursor: pointer;
+        box-shadow: 0 0 0 transparent; transition: all .25s ease;
     }
-    .claim-card:hover { border-color: #58a6ff; box-shadow: 0 0 12px rgba(88,166,255,0.6); transform: translateY(-2px); }
+    .claim-card:hover {
+        border-color: #58a6ff;
+        box-shadow: 0 0 12px rgba(88,166,255,0.6);
+        transform: translateY(-2px);
+    }
     .selected-card { border-left: 4px solid #58a6ff; background: #1c2128; box-shadow: 0 0 16px rgba(88,166,255,0.8); }
-    .status-text { font-size: 12px; color: #3fb950; margin-top: 5px; }
+    .status-text     { font-size: 12px; color: #3fb950; margin-top: 5px; }
     .status-progress { font-size: 12px; color: #d29922; margin-top: 5px; }
-
-    .mid-header-title { font-size: 26px; font-weight: bold; color: white; margin-bottom: 0px; }
-    .mid-header-sub { font-size: 15px; color: #8b949e; margin-top: 5px; margin-bottom: 5px; }
+    .mid-header-title  { font-size: 26px; font-weight: bold; color: white; margin-bottom: 0px; }
+    .mid-header-sub    { font-size: 15px; color: #8b949e; margin-top: 5px; margin-bottom: 5px; }
     .mid-header-status { font-size: 13px; color: #3fb950; margin-bottom: 15px; }
-    .incurred-label { font-size: 14px; color: #8b949e; margin-bottom: 0px; }
-    .incurred-amount { font-size: 26px; font-weight: bold; color: #3fb950; margin-top: 0px; margin-bottom: 20px; }
-
-    .main-title { text-shadow: 0 0 10px rgba(88,166,255,0.7); }
-
-    div[data-baseweb="input"], div[data-baseweb="base-input"], div[data-baseweb="select"] {
+    .incurred-label    { font-size: 14px; color: #8b949e; margin-bottom: 0px; }
+    .incurred-amount   { font-size: 26px; font-weight: bold; color: #3fb950; margin-top: 0px; margin-bottom: 20px; }
+    div[data-baseweb="input"],
+    div[data-baseweb="base-input"],
+    div[data-baseweb="select"] {
         background-color: #161b22 !important;
         border: 1px solid #30363d !important;
         border-radius: 6px !important;
@@ -76,7 +83,6 @@ st.markdown("""
         cursor: default !important;
         padding-left: 0px !important;
     }
-
     div[data-testid="stButton"] button {
         background-color: transparent !important;
         color: #8b949e !important;
@@ -90,7 +96,7 @@ st.markdown("""
         color: #58a6ff !important;
         background-color: #1c2128 !important;
     }
-
+    div[data-testid="stButton"] button:disabled { opacity: 0.3 !important; }
     div[role="dialog"] {
         background-color: #0d1117 !important;
         border: 1px solid #30363d !important;
@@ -107,163 +113,172 @@ st.markdown("""
         color: #58a6ff !important;
         background-color: #1c2128 !important;
     }
-
-    .left-scroll-container {
-        height: calc(100vh - 140px);
-        overflow-y: auto;
-        padding-right: 6px;
-    }
+    .left-scroll-container { height: calc(100vh - 140px); overflow-y: auto; padding-right: 6px; }
 </style>
 """, unsafe_allow_html=True)
 
 
 # ==============================
-# AZURE CONFIG
+# AZURE CLIENT
 # ==============================
-cfg = st.secrets.get("azureai", {})
-ENDPOINT = cfg.get("ENDPOINT")
-KEY = cfg.get("KEY")
-client = DocumentIntelligenceClient(endpoint=ENDPOINT, credential=AzureKeyCredential(KEY))
+cfg        = st.secrets.get("azureai", {})
+ENDPOINT   = cfg.get("ENDPOINT")
+KEY        = cfg.get("KEY")
+adi_client = DocumentIntelligenceClient(
+    endpoint=ENDPOINT, credential=AzureKeyCredential(KEY)
+)
 
 
 # ==============================
-# CROSS-PLATFORM HELPERS (replaces win32com)
+# SHEET NAMES  (openpyxl — no win32com)
 # ==============================
-def get_sheet_names(file_path: str) -> list[str]:
-    """Returns sheet names using openpyxl (works on Linux/Windows/Mac)."""
+def get_sheet_names(file_path: str) -> list:
     ext = os.path.splitext(file_path)[1].lower()
     if ext == ".csv":
         return ["Sheet1"]
-    wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+    wb    = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
     names = wb.sheetnames
     wb.close()
     return names
 
 
+# ==============================
+# EXCEL → PDF  via ReportLab
+# Pure Python · No LibreOffice · No win32com · Works on Python 3.14
+# ==============================
 def convert_sheet_to_pdf(file_path: str, sheet_name: str, pdf_path: str) -> dict:
     """
-    Converts a single Excel sheet (or CSV) to PDF using LibreOffice headless.
-    Returns exact_headers dict {col_index: header_name}.
-    Requires: libreoffice installed (add to packages.txt on Streamlit Cloud).
+    Reads one Excel sheet with openpyxl, renders it as a clean bordered
+    table PDF using ReportLab.  Returns exact_headers {col_index: header}.
+    ReportLab is pure Python — zero system dependencies on any platform.
     """
     exact_headers = {}
-    ext = os.path.splitext(file_path)[1].lower()
+    ext           = os.path.splitext(file_path)[1].lower()
 
-    # ── Isolated temp workspace to avoid LibreOffice lock conflicts ──
-    work_dir = tempfile.mkdtemp()
-    lo_profile = os.path.join(work_dir, "lo_profile")
+    # ── 1. Load raw rows ──────────────────────────────────────────────────
+    if ext == ".csv":
+        with open(file_path, "r", encoding="utf-8-sig") as f:
+            all_rows = [r for r in csv.reader(f)]
+    else:
+        wb       = openpyxl.load_workbook(file_path, data_only=True)
+        ws       = wb[sheet_name]
+        all_rows = [
+            [str(cell.value) if cell.value is not None else "" for cell in row]
+            for row in ws.iter_rows()
+        ]
+        wb.close()
 
-    try:
-        if ext == ".csv":
-            # Extract headers from CSV
-            with open(file_path, "r", encoding="utf-8-sig") as f:
-                reader = csv.reader(f)
-                for row in reader:
-                    non_empty = [v for v in row if v.strip()]
-                    if len(non_empty) >= 2:
-                        for i, v in enumerate(row):
-                            if v.strip():
-                                exact_headers[i] = v.strip()
-                        break
+    if not all_rows:
+        raise ValueError(f"Sheet '{sheet_name}' is empty.")
 
-            src = file_path  # LibreOffice can convert CSV directly
-            base_name = os.path.splitext(os.path.basename(file_path))[0]
+    # ── 2. Find header row (first row with ≥2 populated cells) ───────────
+    header_row_idx = 0
+    for i, row in enumerate(all_rows):
+        if len([v for v in row if str(v).strip()]) >= 2:
+            header_row_idx = i
+            break
 
-        else:
-            # ── Load source workbook, pull headers ──
-            wb_src = openpyxl.load_workbook(file_path, data_only=True)
-            ws = wb_src[sheet_name]
+    # ── 3. Build exact_headers dict ───────────────────────────────────────
+    for ci, val in enumerate(all_rows[header_row_idx]):
+        h = str(val).strip()
+        exact_headers[ci] = h if h else f"Column_{ci}"
 
-            for row in ws.iter_rows():
-                non_empty = [c for c in row if c.value is not None]
-                if len(non_empty) >= 2:
-                    for cell in non_empty:
-                        exact_headers[cell.column - 1] = str(cell.value).strip()
-                    break
+    # ── 4. Build table data (header + data rows, skip totally blank rows) ─
+    table_data = []
+    for row in all_rows[header_row_idx:]:
+        clean = [str(v).strip() if v is not None else "" for v in row]
+        if any(clean):                        # skip blank rows
+            table_data.append(clean)
 
-            # ── Create isolated workbook for this sheet only ──
-            wb_new = openpyxl.Workbook()
-            ws_new = wb_new.active
-            ws_new.title = sheet_name
+    if not table_data:
+        raise ValueError("No data rows found after header.")
 
-            for row in ws.iter_rows(values_only=True):
-                ws_new.append([str(v) if v is not None else "" for v in row])
+    # ── 5. Render with ReportLab ──────────────────────────────────────────
+    page_w, page_h = landscape(A3)           # wide landscape — matches win32 Tabloid setting
+    margin         = 0.4 * inch
 
-            # Page setup: landscape, fit-to-width (mirrors original win32 settings)
-            ws_new.page_setup.orientation = "landscape"
-            ws_new.page_setup.fitToWidth = 1
-            ws_new.page_setup.fitToHeight = 0
-            ws_new.sheet_properties.pageSetUpPr.fitToPage = True
-            ws_new.print_options.gridLines = True
+    doc = SimpleDocTemplate(
+        pdf_path,
+        pagesize    = (page_w, page_h),
+        leftMargin  = margin,
+        rightMargin = margin,
+        topMargin   = margin,
+        bottomMargin= margin,
+    )
 
-            wb_src.close()
+    # Auto-size columns: split available width evenly, cap per column
+    available_w  = page_w - 2 * margin
+    n_cols       = max(len(r) for r in table_data)
+    col_w        = min(available_w / n_cols, 1.8 * inch)
+    col_widths   = [col_w] * n_cols
 
-            src = os.path.join(work_dir, "sheet.xlsx")
-            base_name = "sheet"
-            wb_new.save(src)
-            wb_new.close()
+    table = Table(table_data, colWidths=col_widths, repeatRows=1)
+    table.setStyle(TableStyle([
+        # Header row
+        ("BACKGROUND",   (0, 0), (-1, 0),  colors.HexColor("#1a3a5c")),
+        ("TEXTCOLOR",    (0, 0), (-1, 0),  colors.white),
+        ("FONTNAME",     (0, 0), (-1, 0),  "Helvetica-Bold"),
+        ("FONTSIZE",     (0, 0), (-1, 0),  9),
+        ("ROWBACKGROUND",(0, 0), (-1, 0),  colors.HexColor("#1a3a5c")),
 
-        # ── LibreOffice conversion ──
-        result = subprocess.run(
-            [
-                "soffice",
-                f"--env:UserInstallation=file://{lo_profile}",
-                "--headless",
-                "--norestore",
-                "--convert-to", "pdf",
-                "--outdir", work_dir,
-                src,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
+        # Data rows
+        ("FONTNAME",     (0, 1), (-1, -1), "Helvetica"),
+        ("FONTSIZE",     (0, 1), (-1, -1), 8),
+        ("ROWBACKGROUND",(0, 1), (-1, -1), [colors.white, colors.HexColor("#f5f8fc")]),
 
-        generated = os.path.join(work_dir, f"{base_name}.pdf")
-        if os.path.exists(generated):
-            shutil.move(generated, pdf_path)
-        else:
-            raise RuntimeError(
-                f"LibreOffice PDF conversion failed.\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
-            )
+        # Grid — clear borders help ADI detect the table structure
+        ("GRID",         (0, 0), (-1, -1), 0.5, colors.HexColor("#888888")),
+        ("BOX",          (0, 0), (-1, -1), 1,   colors.HexColor("#333333")),
 
-    finally:
-        shutil.rmtree(work_dir, ignore_errors=True)
+        # Padding & alignment
+        ("TOPPADDING",   (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING",(0, 0), (-1, -1), 4),
+        ("LEFTPADDING",  (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("VALIGN",       (0, 0), (-1, -1), "MIDDLE"),
+        ("WORDWRAP",     (0, 0), (-1, -1), True),
+    ]))
 
+    doc.build([table])
     return exact_headers
 
 
 # ==============================
-# ADI HELPERS
+# ADI — CONFIDENCE SCORER
 # ==============================
-def get_cell_confidence(cell, result):
+def get_cell_confidence(cell, result) -> float:
     if not cell.spans:
         return 0.98
-    start = cell.spans[0].offset
-    end = start + cell.spans[0].length
+    start  = cell.spans[0].offset
+    end    = start + cell.spans[0].length
     scores = []
     for page in result.pages:
         for w in page.words:
             if w.span.offset >= start and (w.span.offset + w.span.length) <= end:
-                word_content = w.content.strip()
-                if len(word_content) > 1 or word_content.isalnum():
+                wc = w.content.strip()
+                if len(wc) > 1 or wc.isalnum():
                     scores.append(w.confidence)
     if not scores:
         return 0.96
-    avg_conf = sum(scores) / len(scores)
-    boosted = avg_conf + ((1.0 - avg_conf) * 0.4)
+    avg     = sum(scores) / len(scores)
+    boosted = avg + (1.0 - avg) * 0.4
     return round(min(0.99, boosted), 3)
 
 
-def extract_from_adi(pdf_path, exact_headers):
+# ==============================
+# ADI — TABLE EXTRACTION
+# ==============================
+def extract_from_adi(pdf_path: str, exact_headers: dict):
     with open(pdf_path, "rb") as f:
-        poller = client.begin_analyze_document(model_id="prebuilt-layout", body=f.read())
+        poller = adi_client.begin_analyze_document(
+            model_id="prebuilt-layout", body=f.read()
+        )
     result = poller.result()
 
     if not result.tables:
         return None, None
 
-    extracted = []
+    extracted          = []
     global_headers_map = None
 
     for table in result.tables:
@@ -273,12 +288,7 @@ def extract_from_adi(pdf_path, exact_headers):
             if cell.content and cell.content.strip():
                 row_counts[cell.row_index] += 1
 
-        header_row = None
-        for r, count in row_counts.items():
-            if count >= 4:
-                header_row = r
-                break
-
+        header_row = next((r for r, c in row_counts.items() if c >= 4), None)
         if header_row is None:
             continue
 
@@ -289,16 +299,15 @@ def extract_from_adi(pdf_path, exact_headers):
         }
 
         local_headers_map = detected_headers
-
         if local_headers_map and not global_headers_map:
             global_headers_map = local_headers_map
 
         if not local_headers_map and global_headers_map:
             active_headers_map = global_headers_map
-            start_row = 0
+            start_row          = 0
         else:
             active_headers_map = local_headers_map if local_headers_map else global_headers_map
-            start_row = header_row + 1
+            start_row          = header_row + 1
 
         if not active_headers_map:
             continue
@@ -312,21 +321,21 @@ def extract_from_adi(pdf_path, exact_headers):
                     header_text = f"Column_{c_idx}"
 
                 cell = next(
-                    (cl for cl in table.cells if cl.row_index == r and cl.column_index == c_idx),
-                    None,
+                    (cl for cl in table.cells
+                     if cl.row_index == r and cl.column_index == c_idx), None
                 )
                 if cell:
-                    br = cell.bounding_regions[0] if cell.bounding_regions else None
-                    raw_val = cell.content.strip()
-                    if raw_val.startswith("| ") or raw_val.startswith("I "):
-                        raw_val = raw_val[2:]
-                    raw_val = raw_val.replace("\n", " ").strip()
+                    br      = cell.bounding_regions[0] if cell.bounding_regions else None
+                    raw     = cell.content.strip()
+                    if raw.startswith("| ") or raw.startswith("I "):
+                        raw = raw[2:]
+                    raw = raw.replace("\n", " ").strip()
                     row_data[header_text] = {
-                        "value": raw_val,
-                        "modified": raw_val,
+                        "value":      raw,
+                        "modified":   raw,
                         "confidence": get_cell_confidence(cell, result),
-                        "polygon": br.polygon if br else None,
-                        "page": br.page_number if br else None,
+                        "polygon":    br.polygon     if br else None,
+                        "page":       br.page_number if br else None,
                     }
 
             if row_data and any(v["value"].strip() for v in row_data.values()):
@@ -336,75 +345,75 @@ def extract_from_adi(pdf_path, exact_headers):
 
 
 # ==============================
-# POPUP DIALOG
+# 👁 EYE POPUP
 # ==============================
 @st.dialog("Field Verification")
-def show_eye_popup(field, info, pdf_path, adi_result):
-    confidence = info["confidence"]
-    value = info.get("modified", info["value"])
+def show_eye_popup(field: str, info: dict, pdf_path: str, adi_result):
     st.markdown(f"### {field}")
-    st.write("Value:")
-    st.code(value)
-    st.write(f"Confidence: {int(confidence * 100)}%")
+    value = info.get("modified", info["value"])
+    st.write("**Value:**")
+    st.code(value if value else "(empty)")
+    conf  = info["confidence"]
+    color = "#3fb950" if conf >= 0.85 else "#d29922" if conf >= 0.70 else "#f85149"
+    st.markdown(f"""
+        <div style="margin-bottom:12px;">
+            <span style="color:#8b949e;">Confidence: </span>
+            <span style="color:{color}; font-weight:bold;">{int(conf*100)}%</span>
+        </div>
+        <div style="height:6px; background:#30363d; border-radius:3px;">
+            <div style="width:{conf*100}%; height:100%; background:{color};
+                        box-shadow:0 0 5px {color}; border-radius:3px;"></div>
+        </div>
+    """, unsafe_allow_html=True)
 
-    polygon = info.get("polygon")
-    page_number = info.get("page")
-
-    if polygon and page_number:
-        doc = fitz.open(pdf_path)
+    polygon, page_number = info.get("polygon"), info.get("page")
+    if polygon and page_number and pdf_path:
+        doc  = fitz.open(pdf_path)
         page = doc[page_number - 1]
-        pix = page.get_pixmap(dpi=300)
-        img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGBA")
+        pix  = page.get_pixmap(dpi=300)
+        img  = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGBA")
 
-        p_width = adi_result.pages[page_number - 1].width
-        p_height = adi_result.pages[page_number - 1].height
-        i_width, i_height = img.size
+        p_w, p_h     = adi_result.pages[page_number-1].width, adi_result.pages[page_number-1].height
+        i_w, i_h     = img.size
+        x_vals, y_vals = polygon[0::2], polygon[1::2]
 
-        x_vals = polygon[0::2]
-        y_vals = polygon[1::2]
-        left = (min(x_vals) / p_width) * i_width
-        top = (min(y_vals) / p_height) * i_height
-        right = (max(x_vals) / p_width) * i_width
-        bottom = (max(y_vals) / p_height) * i_height
-        pad = 6
-        crop_box = (
-            max(0, int(left) - pad),
-            max(0, int(top) - pad),
-            min(i_width, int(right) + pad),
-            min(i_height, int(bottom) + pad),
-        )
-        snippet = img.crop(crop_box)
-        st.image(snippet, use_container_width=True)
+        left   = (min(x_vals)/p_w)*i_w
+        top    = (min(y_vals)/p_h)*i_h
+        right  = (max(x_vals)/p_w)*i_w
+        bottom = (max(y_vals)/p_h)*i_h
+        pad    = 6
+
+        crop = (max(0,int(left)-pad), max(0,int(top)-pad),
+                min(i_w,int(right)+pad), min(i_h,int(bottom)+pad))
+        st.image(img.crop(crop), use_container_width=True)
         doc.close()
+    else:
+        st.info("No bounding box available for this field.")
 
 
 # ==============================
 # UTILS
 # ==============================
-def get_val(claim, possible_keys, default=""):
-    for pk in possible_keys:
+def get_val(claim: dict, keys: list, default: str = "") -> str:
+    for pk in keys:
         for k, v in claim.items():
             if pk.lower() in str(k).lower():
-                return v["value"]
+                return v["value"] or default
     return default
 
 
 def clean_duplicate_fields(record: dict) -> dict:
-    seen = set()
-    cleaned = {}
+    seen, out = set(), {}
     for k, v in record.items():
-        key = k.strip()
-        if key in seen:
-            continue
-        seen.add(key)
-        cleaned[key] = v
-    return cleaned
+        if k.strip() not in seen:
+            seen.add(k.strip())
+            out[k.strip()] = v
+    return out
 
 
-def save_feature_store(sheet_name, data):
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{sheet_name}_{timestamp}.json"
-    path = os.path.join(FEATURE_STORE_PATH, filename)
+def save_feature_store(sheet_name: str, data: dict) -> str:
+    ts   = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = os.path.join(FEATURE_STORE_PATH, f"{sheet_name}_{ts}.json")
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
     return path
@@ -423,267 +432,220 @@ if uploaded:
     if "tmpdir" not in st.session_state:
         st.session_state.tmpdir = tempfile.mkdtemp()
 
-    file_ext = os.path.splitext(uploaded.name)[1]
+    file_ext   = os.path.splitext(uploaded.name)[1]
     excel_path = os.path.join(st.session_state.tmpdir, f"input{file_ext}")
 
     if st.session_state.get("last_uploaded") != uploaded.name:
         with open(excel_path, "wb") as f:
             f.write(uploaded.read())
         st.session_state.last_uploaded = uploaded.name
-        st.session_state.sheet_names = get_sheet_names(excel_path)
-        st.session_state.sheet_cache = {}
-        st.session_state.selected_idx = 0
-        st.session_state.focus_field = None
+        st.session_state.sheet_names   = get_sheet_names(excel_path)
+        st.session_state.sheet_cache   = {}
+        st.session_state.selected_idx  = 0
+        st.session_state.focus_field   = None
 
     with col_sheet_dropdown:
-        st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
-        selected_sheet = st.selectbox("Sheet", st.session_state.sheet_names, label_visibility="collapsed")
+        st.markdown("<div style='margin-top:20px;'></div>", unsafe_allow_html=True)
+        selected_sheet = st.selectbox(
+            "Sheet", st.session_state.sheet_names, label_visibility="collapsed"
+        )
 
-    st.markdown("<hr style='border-color: #30363d; margin-top: -10px;'>", unsafe_allow_html=True)
+    st.markdown("<hr style='border-color:#30363d; margin-top:-10px;'>", unsafe_allow_html=True)
 
     if selected_sheet not in st.session_state.sheet_cache:
-        with st.spinner(f"Analyzing sheet '{selected_sheet}' with Azure Intelligence..."):
+        with st.spinner(f"Building PDF & analyzing '{selected_sheet}' with Azure Intelligence..."):
             pdf_path = os.path.join(st.session_state.tmpdir, f"{selected_sheet}.pdf")
-            exact_headers = convert_sheet_to_pdf(excel_path, selected_sheet, pdf_path)
+
+            try:
+                exact_headers = convert_sheet_to_pdf(excel_path, selected_sheet, pdf_path)
+            except Exception as e:
+                st.error(f"PDF build failed: {e}")
+                st.stop()
+
             data, adi_result = extract_from_adi(pdf_path, exact_headers)
 
             if not data:
-                st.warning(f"No valid tables detected in sheet '{selected_sheet}'.")
+                st.warning(f"No tables detected in sheet '{selected_sheet}'.")
                 st.stop()
 
             st.session_state.sheet_cache[selected_sheet] = {
-                "data": data,
-                "adi_result": adi_result,
-                "pdf_path": pdf_path,
+                "data": data, "adi_result": adi_result, "pdf_path": pdf_path
             }
             st.session_state.selected_idx = 0
-            st.session_state.focus_field = None
+            st.session_state.focus_field  = None
 
-    active_cache = st.session_state.sheet_cache[selected_sheet]
-    data = active_cache["data"]
-    adi_result = active_cache["adi_result"]
-    pdf_path = active_cache["pdf_path"]
+    active      = st.session_state.sheet_cache[selected_sheet]
+    data        = active["data"]
+    adi_result  = active["adi_result"]
+    pdf_path    = active["pdf_path"]
 
     if st.session_state.selected_idx >= len(data):
         st.session_state.selected_idx = 0
 
-    curr_claim = data[st.session_state.selected_idx]
-    col_nav, col_main = st.columns([1.2, 3.8], gap="large")
+    curr_claim         = data[st.session_state.selected_idx]
+    col_nav, col_main  = st.columns([1.2, 3.8], gap="large")
 
-    # ── LEFT PANEL ──
+    # ── LEFT PANEL ────────────────────────────────────────────────────────
     with col_nav:
-        records_container = st.container(height=600, border=False)
-        with records_container:
-            st.markdown(
-                "<p style='color:#8b949e; font-weight:bold; font-size:12px; text-transform:uppercase;'>TPA Records</p>",
-                unsafe_allow_html=True,
-            )
+        with st.container(height=600, border=False):
+            st.markdown("<p style='color:#8b949e; font-weight:bold; font-size:12px; text-transform:uppercase;'>TPA Records</p>", unsafe_allow_html=True)
+
             for i, row_data in enumerate(data):
-                is_sel = "selected-card" if st.session_state.selected_idx == i else ""
-                c_id = get_val(row_data, ["CLAIM_NUMBER", "Claim Number", "Claim_No", "Claim ID"], f"CLM-{10021 + i * 24}")
-                c_name = get_val(row_data, ["Insured Name", "Name", "Company", "Claimant", "TPA_NAME"], "Unknown Entity")
-                c_status = get_val(row_data, ["Status", "CLAIM_STATUS"], "Yet to Review" if i == 0 else "In Progress" if i == 1 else "Submitted")
-                status_cls = "status-progress" if "Progress" in c_status or c_status.lower() == "open" else "status-text"
+                is_sel   = "selected-card" if st.session_state.selected_idx == i else ""
+                c_id     = get_val(row_data, ["CLAIM_NUMBER","Claim Number","Claim_No","Claim ID"],    f"CLM-{10021+i*24}")
+                c_name   = get_val(row_data, ["Insured Name","Name","Company","Claimant","TPA_NAME"],  "Unknown Entity")
+                raw_st   = get_val(row_data, ["Status","CLAIM_STATUS"], "")
+                c_status = raw_st or ("Yet to Review" if i==0 else "In Progress" if i==1 else "Submitted")
+                s_cls    = "status-progress" if "progress" in c_status.lower() or c_status.lower()=="open" else "status-text"
 
                 st.markdown(f"""
                 <div class="claim-card {is_sel}">
-                    <div style="font-weight:bold; color:white; font-size:15px;">{c_id}</div>
-                    <div style="color:#8b949e; font-size:13px; margin-top:2px;">{c_name}</div>
-                    <div class="{status_cls}">{c_status}</div>
-                </div>
-                """, unsafe_allow_html=True)
+                    <div style="font-weight:bold;color:white;font-size:15px;">{c_id}</div>
+                    <div style="color:#8b949e;font-size:13px;margin-top:2px;">{c_name}</div>
+                    <div class="{s_cls}">{c_status}</div>
+                </div>""", unsafe_allow_html=True)
 
                 if st.button("Select", key=f"sel_{selected_sheet}_{i}", use_container_width=True):
                     st.session_state.selected_idx = i
-                    st.session_state.focus_field = None
+                    st.session_state.focus_field  = None
                     st.rerun()
 
-    # ── RIGHT PANEL ──
+    # ── RIGHT PANEL ───────────────────────────────────────────────────────
     with col_main:
         head_left, head_right = st.columns([3, 1])
-        curr_claim_id = get_val(
-            curr_claim,
-            ["CLAIM_NUMBER", "Claim Number", "Claim_No", "Claim ID"],
-            f"CLM-{10021 + st.session_state.selected_idx * 24}",
-        )
+
+        curr_claim_id = get_val(curr_claim, ["CLAIM_NUMBER","Claim Number","Claim_No","Claim ID"],
+                                f"CLM-{10021+st.session_state.selected_idx*24}")
 
         with head_left:
-            st.markdown(
-                "<p style='color:#8b949e; font-weight:bold; font-size:12px; text-transform:uppercase;'>Review Details</p>",
-                unsafe_allow_html=True,
-            )
-            h_name = get_val(curr_claim, ["Insured Name", "Name", "Claimant", "TPA_NAME"], "Unknown Entity")
-            h_date = get_val(curr_claim, ["Loss Date", "Date", "LOSS_DATE"], "N/A")
-            h_status = get_val(curr_claim, ["Status", "CLAIM_STATUS"], "Submitted")
-            h_total = get_val(curr_claim, ["Total Incurred", "Incurred", "Total", "Amount", "TOTAL_INCURRED"], "$0")
-
+            st.markdown("<p style='color:#8b949e;font-weight:bold;font-size:12px;text-transform:uppercase;'>Review Details</p>", unsafe_allow_html=True)
+            h_name   = get_val(curr_claim, ["Insured Name","Name","Claimant","TPA_NAME"],                   "Unknown Entity")
+            h_date   = get_val(curr_claim, ["Loss Date","Date","LOSS_DATE"],                                "N/A")
+            h_status = get_val(curr_claim, ["Status","CLAIM_STATUS"],                                       "Submitted")
+            h_total  = get_val(curr_claim, ["Total Incurred","Incurred","Total","Amount","TOTAL_INCURRED"],  "$0")
             st.markdown(f"""
                 <div class="mid-header-title">{curr_claim_id}</div>
-                <div class="mid-header-sub">{h_name} - {h_date}</div>
+                <div class="mid-header-sub">{h_name} — {h_date}</div>
                 <div class="mid-header-status">{h_status}</div>
                 <div class="incurred-label">Total Incurred</div>
                 <div class="incurred-amount">{h_total}</div>
-                <br>
-                <p style='color:#8b949e; font-weight:bold; font-size:12px; text-transform:uppercase;'>Field</p>
             """, unsafe_allow_html=True)
 
         with head_right:
-            st.markdown(
-                "<p style='color:#8b949e; font-weight:bold; font-size:12px; text-transform:uppercase; text-align:right;'>Export Selection</p>",
-                unsafe_allow_html=True,
-            )
-            b_col1, b_col2 = st.columns([1, 1])
-            with b_col1:
-                if st.button("☑ All", key=f"sel_all_{selected_sheet}_{curr_claim_id}", use_container_width=True):
-                    for field in curr_claim.keys():
-                        st.session_state[f"chk_export_{selected_sheet}_{curr_claim_id}_{field}"] = True
+            st.markdown("<p style='color:#8b949e;font-weight:bold;font-size:12px;text-transform:uppercase;text-align:right;'>Export Selection</p>", unsafe_allow_html=True)
+            b1, b2 = st.columns(2)
+            with b1:
+                if st.button("☑ All", key=f"all_{selected_sheet}_{curr_claim_id}", use_container_width=True):
+                    for f in curr_claim: st.session_state[f"chk_{selected_sheet}_{curr_claim_id}_{f}"] = True
                     st.rerun()
-            with b_col2:
-                if st.button("☐ None", key=f"desel_all_{selected_sheet}_{curr_claim_id}", use_container_width=True):
-                    for field in curr_claim.keys():
-                        st.session_state[f"chk_export_{selected_sheet}_{curr_claim_id}_{field}"] = False
+            with b2:
+                if st.button("☐ None", key=f"none_{selected_sheet}_{curr_claim_id}", use_container_width=True):
+                    for f in curr_claim: st.session_state[f"chk_{selected_sheet}_{curr_claim_id}_{f}"] = False
                     st.rerun()
 
-        st.markdown("<hr style='border-color: #30363d; margin-top: -15px;'>", unsafe_allow_html=True)
+        st.markdown("<hr style='border-color:#30363d;margin-top:8px;'>", unsafe_allow_html=True)
 
-        header_cols = st.columns([2, 2.6, 2.6, 0.4, 0.4, 2.2, 0.5])
-        with header_cols[0]: st.markdown("**FIELD**")
-        with header_cols[1]: st.markdown("**ORIGINAL VALUE**")
-        with header_cols[2]: st.markdown("**MODIFIED VALUE**")
-        with header_cols[3]: st.markdown(" ")
-        with header_cols[4]: st.markdown(" ")
-        with header_cols[5]: st.markdown("**CONFIDENCE**")
-        with header_cols[6]: st.markdown(" ")
+        hc = st.columns([2, 2.6, 2.6, 0.6, 0.6, 2.2, 0.5])
+        with hc[0]: st.markdown("**FIELD**")
+        with hc[1]: st.markdown("**ORIGINAL VALUE**")
+        with hc[2]: st.markdown("**MODIFIED VALUE**")
+        with hc[5]: st.markdown("**CONFIDENCE**")
 
         for field, info in curr_claim.items():
-            edit_key = f"edit_{selected_sheet}_{curr_claim_id}_{field}"
-            widget_key = f"chk_export_{selected_sheet}_{curr_claim_id}_{field}"
+            ek  = f"edit_{selected_sheet}_{curr_claim_id}_{field}"
+            xk  = f"chk_{selected_sheet}_{curr_claim_id}_{field}"
+            mk  = f"mod_{selected_sheet}_{curr_claim_id}_{field}"
 
-            if edit_key not in st.session_state:
-                st.session_state[edit_key] = False
-            if widget_key not in st.session_state:
-                st.session_state[widget_key] = True
+            if ek not in st.session_state: st.session_state[ek] = False
+            if xk not in st.session_state: st.session_state[xk] = True
+            if mk not in st.session_state: st.session_state[mk] = info.get("modified", info["value"])
 
-            col_lbl, col_orig, col_mod, col_btn1, col_btn2, col_conf, col_chk = st.columns(
-                [2, 2.6, 2.6, 0.7, 0.7, 2.2, 0.5], gap="small"
-            )
+            cl, co, cm, ce, cb, cc, cx = st.columns([2,2.6,2.6,0.6,0.6,2.2,0.5], gap="small")
 
-            with col_lbl:
-                st.markdown(
-                    f"<div style='height: 40px; display: flex; align-items: center; color:#c9d1d9; font-size:12px; font-weight:bold; text-transform:uppercase;'>{field}</div>",
-                    unsafe_allow_html=True,
-                )
-            with col_orig:
-                st.text_input(
-                    "orig",
-                    value=info["value"],
-                    key=f"orig_{selected_sheet}_{curr_claim_id}_{field}",
-                    label_visibility="collapsed",
-                    disabled=True,
-                )
-            with col_mod:
-                edit_enabled = st.session_state[edit_key]
-                mod_key = f"mod_{selected_sheet}_{curr_claim_id}_{field}"
-                if mod_key not in st.session_state:
-                    st.session_state[mod_key] = info.get("modified", info["value"])
-                new_val = st.text_input("mod", key=mod_key, label_visibility="collapsed", disabled=not edit_enabled)
-                st.session_state.sheet_cache[selected_sheet]["data"][st.session_state.selected_idx][field]["modified"] = new_val
-
-            with col_btn1:
-                if st.button("👁", key=f"view_{selected_sheet}_{curr_claim_id}_{field}", use_container_width=True):
+            with cl:
+                st.markdown(f"<div style='height:40px;display:flex;align-items:center;color:#c9d1d9;font-size:12px;font-weight:bold;text-transform:uppercase;'>{field}</div>", unsafe_allow_html=True)
+            with co:
+                st.text_input("o", value=info["value"], key=f"orig_{selected_sheet}_{curr_claim_id}_{field}", label_visibility="collapsed", disabled=True)
+            with cm:
+                nv = st.text_input("m", key=mk, label_visibility="collapsed", disabled=not st.session_state[ek])
+                st.session_state.sheet_cache[selected_sheet]["data"][st.session_state.selected_idx][field]["modified"] = nv
+            with ce:
+                if st.button("👁", key=f"eye_{selected_sheet}_{curr_claim_id}_{field}", use_container_width=True):
                     show_eye_popup(field, info, pdf_path, adi_result)
-
-            with col_btn2:
+            with cb:
                 conf = info["confidence"]
                 if conf > 0.98:
-                    st.button("🔒", key=f"locked_{selected_sheet}_{curr_claim_id}_{field}", disabled=True, use_container_width=True)
+                    st.button("🔒", key=f"lk_{selected_sheet}_{curr_claim_id}_{field}", disabled=True, use_container_width=True)
                 else:
-                    if st.button("✏", key=f"toggle_edit_{selected_sheet}_{curr_claim_id}_{field}", use_container_width=True):
-                        st.session_state[edit_key] = not st.session_state[edit_key]
+                    if st.button("✏", key=f"ed_{selected_sheet}_{curr_claim_id}_{field}", use_container_width=True):
+                        st.session_state[ek] = not st.session_state[ek]
                         st.rerun()
-
-            with col_conf:
-                conf = info["confidence"]
-                color = "#3fb950" if conf >= 0.85 else "#d29922" if conf >= 0.70 else "#f85149"
+            with cc:
+                conf  = info["confidence"]
+                color = "#3fb950" if conf>=0.85 else "#d29922" if conf>=0.70 else "#f85149"
                 st.markdown(f"""
-                    <div style="display: flex; align-items: center; gap: 10px; height: 40px;">
-                        <div style="flex-grow: 1; height: 6px; background: #30363d; border-radius: 3px;">
-                            <div style="width:{conf*100}%; height:100%; background:{color}; box-shadow: 0 0 5px {color}; border-radius: 3px;"></div>
+                    <div style="display:flex;align-items:center;gap:10px;height:40px;">
+                        <div style="flex-grow:1;height:6px;background:#30363d;border-radius:3px;">
+                            <div style="width:{conf*100}%;height:100%;background:{color};box-shadow:0 0 5px {color};border-radius:3px;"></div>
                         </div>
-                        <div style="font-size: 12px; color: #8b949e; width: 35px; text-align: right;">{int(conf*100)}%</div>
-                    </div>
-                """, unsafe_allow_html=True)
+                        <div style="font-size:12px;color:#8b949e;width:35px;text-align:right;">{int(conf*100)}%</div>
+                    </div>""", unsafe_allow_html=True)
+            with cx:
+                st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+                st.checkbox("", key=xk, label_visibility="collapsed")
 
-            with col_chk:
-                st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
-                st.checkbox("", key=widget_key, label_visibility="collapsed")
+        st.markdown("<hr style='border-color:#30363d;margin-top:12px;'>", unsafe_allow_html=True)
 
-        st.markdown("<hr style='border-color: #30363d;'>", unsafe_allow_html=True)
-
-        btn_col1, btn_col2 = st.columns([4, 1.5])
-        with btn_col2:
+        _, btn_col = st.columns([4, 1.5])
+        with btn_col:
             if st.button(f"☑ Export Sheet '{selected_sheet}' to JSON", type="primary", use_container_width=True):
                 export_data = {}
                 for i, row in enumerate(data):
-                    c_id = get_val(row, ["CLAIM_NUMBER", "Claim Number", "Claim_No"], f"CLM-{10021 + i * 24}")
-                    export_data[c_id] = {}
+                    c_id = get_val(row, ["CLAIM_NUMBER","Claim Number","Claim_No"], f"CLM-{10021+i*24}")
+                    rec  = {}
                     for fld, inf in row.items():
-                        if st.session_state.get(f"chk_export_{selected_sheet}_{c_id}_{fld}", True):
-                            val = inf.get("modified") if inf.get("modified") != inf.get("value") else inf.get("value")
-                            export_data[c_id][fld] = val
-                    export_data[c_id] = clean_duplicate_fields(export_data[c_id])
+                        if st.session_state.get(f"chk_{selected_sheet}_{c_id}_{fld}", True):
+                            mod = inf.get("modified",""); orig = inf.get("value","")
+                            rec[fld] = mod if mod != orig else orig
+                    export_data[c_id] = clean_duplicate_fields(rec)
 
-                saved_path = save_feature_store(selected_sheet, export_data)
+                saved    = save_feature_store(selected_sheet, export_data)
                 json_str = json.dumps(export_data, indent=2)
-                st.success(f"Saved to Feature Store → {saved_path}")
-                st.download_button(
-                    "📥 Download JSON",
-                    data=json_str,
-                    file_name=f"{selected_sheet}_validated.json",
-                    mime="application/json",
-                    use_container_width=True,
-                )
+                st.success(f"✅ Saved → {saved}")
+                st.download_button("📥 Download JSON", data=json_str,
+                                   file_name=f"{selected_sheet}_validated.json",
+                                   mime="application/json", use_container_width=True)
 
-    # ── BOUNDING BOX VIEWER ──
+    # ── BOUNDING BOX SPOTLIGHT ────────────────────────────────────────────
     if st.session_state.focus_field:
-        st.markdown("<br><br>", unsafe_allow_html=True)
         field = st.session_state.focus_field
-        info = curr_claim[field]
+        info  = curr_claim.get(field, {})
         polygon, page_number = info.get("polygon"), info.get("page")
 
-        if polygon and page_number:
-            with st.spinner("Loading document spotlight..."):
-                doc = fitz.open(pdf_path)
+        if polygon and page_number and pdf_path:
+            with st.spinner("Loading spotlight..."):
+                doc  = fitz.open(pdf_path)
                 page = doc[page_number - 1]
-                pix = page.get_pixmap(dpi=300)
-                img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGBA")
+                pix  = page.get_pixmap(dpi=300)
+                img  = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGBA")
 
-                p_width = adi_result.pages[page_number - 1].width
-                p_height = adi_result.pages[page_number - 1].height
-                i_width, i_height = img.size
-                x_vals, y_vals = polygon[0::2], polygon[1::2]
-                left = (min(x_vals) / p_width) * i_width
-                top = (min(y_vals) / p_height) * i_height
-                right = (max(x_vals) / p_width) * i_width
-                bottom = (max(y_vals) / p_height) * i_height
-                pad = 4
-                crop_box = (
-                    max(0, int(left) - pad),
-                    max(0, int(top) - pad),
-                    min(i_width, int(right) + pad),
-                    min(i_height, int(bottom) + pad),
-                )
+                p_w  = adi_result.pages[page_number-1].width
+                p_h  = adi_result.pages[page_number-1].height
+                i_w, i_h   = img.size
+                x_v, y_v   = polygon[0::2], polygon[1::2]
+                left, top  = (min(x_v)/p_w)*i_w, (min(y_v)/p_h)*i_h
+                right, bot = (max(x_v)/p_w)*i_w, (max(y_v)/p_h)*i_h
+                pad        = 4
 
-                overlay = Image.new("RGBA", img.size, (13, 17, 23, 220))
+                crop     = (max(0,int(left)-pad), max(0,int(top)-pad),
+                            min(i_w,int(right)+pad), min(i_h,int(bot)+pad))
+                overlay  = Image.new("RGBA", img.size, (13,17,23,220))
                 darkened = Image.alpha_composite(img, overlay)
-                darkened.paste(img.crop(crop_box), crop_box)
-                ImageDraw.Draw(darkened).rectangle(crop_box, outline="#58a6ff", width=5)
+                darkened.paste(img.crop(crop), crop)
+                ImageDraw.Draw(darkened).rectangle(crop, outline="#58a6ff", width=5)
 
-                st.markdown(
-                    f"<p style='color:white; font-size:16px;'>Spotlight: <span style='color:#58a6ff; font-weight:bold;'>{field}</span> (Page {page_number})</p>",
-                    unsafe_allow_html=True,
-                )
+                st.markdown(f"<p style='color:white;font-size:16px;'>Spotlight: <span style='color:#58a6ff;font-weight:bold;'>{field}</span> (Page {page_number})</p>", unsafe_allow_html=True)
                 st.image(darkened, use_container_width=True)
                 doc.close()
         else:
-            st.warning(f"No spatial coordinates found for {field}.")
+            st.warning(f"No spatial coordinates for '{field}'.")

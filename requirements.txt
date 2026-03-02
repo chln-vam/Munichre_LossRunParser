@@ -1,7 +1,7 @@
-streamlit>=1.32.0
-azure-ai-documentintelligence>=1.0.0
-azure-core>=1.29.0
-python-dotenv>=1.0.0
-PyMuPDF>=1.23.0
-Pillow>=10.0.0
-pywin32>=306
+streamlit
+azure-ai-documentintelligence
+azure-core
+python-dotenv
+PyMuPDF
+Pillow
+pywin32

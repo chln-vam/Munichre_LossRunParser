@@ -1,0 +1,4 @@
+﻿TPA_Name,Insured_Name,Policy_Number,Claim_Number,Loss_Date,Line_of_Business,Coverage_Type,Claim_Status,Claimant_Name,Paid_Indemnity,Paid_Expense,Total_Incurred,Subrogation_Potential
+ABC TPA Services,Sunrise Logistics,CAL-2024-001,CLM-10001,02/14/2024,Commercial Auto,Bodily Injury,Open,John Martinez,25000,5000,30000,Yes
+XYZ Claims Management,GreenField Construction,GL-2024-009,CLM-20001,01-10-2024,General Liability,Slip and Fall,Closed,Amanda Ross,30000,7000,37000,No
+SecureAdjust TPA,Metro Retail Stores,PROP-2024-021,CLM-30001,06/15/2024,Property,Fire,Open,N/A,120000,25000,145000,Yes

@@ -1,7 +1,5 @@
 streamlit
+pymupdf>=1.24.0
+pillow>=10.2.0
 azure-ai-documentintelligence
-azure-core
-python-dotenv
-PyMuPDF
-Pillow
-pywin32
+openpyxl

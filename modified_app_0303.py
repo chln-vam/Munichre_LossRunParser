@@ -610,7 +610,7 @@ if uploaded:
                     show_eye_popup(field, info, pdf_path, adi_result)
             with cb:
                 conf = info["confidence"]
-                if conf > 0.98:
+                if conf >= 0.99:
                     st.button("🔒", key=f"lk_{selected_sheet}_{curr_claim_id}_{field}", disabled=True, use_container_width=True)
                 else:
                     if st.button("✏", key=f"ed_{selected_sheet}_{curr_claim_id}_{field}", use_container_width=True):

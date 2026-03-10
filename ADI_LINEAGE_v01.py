@@ -553,7 +553,9 @@ def save_feature_store(sheet_name: str, data: dict) -> str:
 # with col_title:
 #     st.markdown('<div class="main-title">🛡️ TPA Claims Review Portal</div>', unsafe_allow_html=True)
 
-logo_path = r"C:\Users\LakshmiNarayanaCheru\OneDrive - ValueMomentum, Inc\Documents\Demos\Munichre_LossRunParser\Value_Momentum_logo_v01.jpg"
+#logo_path = r"C:\Users\LakshmiNarayanaCheru\OneDrive - ValueMomentum, Inc\Documents\Demos\Munichre_LossRunParser\Value_Momentum_logo_v01.jpg"
+logo_path = Image.open("Value_Momentum_logo_v01.jpg")
+
 
 col_logo, col_title, col_sheet_dropdown = st.columns([0.6, 3.4, 1], gap="small")
 

@@ -427,7 +427,7 @@ def show_lineage_popup(field: str, info: dict, pdf_path: str):
         ("Extracted Value",       info.get("value", "")),
         ("Modified Value",        info.get("modified", "")),
         ("Confidence Score",      f"{int((info.get('confidence') or 0) * 100)}%"),
-        ("Source Page",           str(info.get("page", "N/A"))),
+        #("Source Page",           str(info.get("page", "N/A"))),
         ("Bounding Polygon",      str(info.get("polygon", "N/A"))),
         # ("Source Document",       os.path.basename(pdf_path)),
         ("TPA File Name",         uploaded.name),

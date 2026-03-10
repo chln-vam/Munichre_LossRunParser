@@ -30,6 +30,16 @@ if "focus_field" not in st.session_state:
     st.session_state.focus_field = None
 
 # ==============================
+# LOGO
+# ==============================
+logo_path = r"C:\Users\LakshmiNarayanaCheru\OneDrive - ValueMomentum, Inc\Documents\Demos\Munichre_LossRunParser\logo 1.jpg"
+
+if os.path.exists(logo_path):
+    col_logo, col_title = st.columns([1,6])
+    with col_logo:
+        st.image(logo_path, width=120)
+
+# ==============================
 # STYLING
 # ==============================
 st.markdown("""

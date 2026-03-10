@@ -547,23 +547,23 @@ def save_feature_store(sheet_name: str, data: dict) -> str:
 
 
 # ==============================
-# MAIN APP
+# MAIN Streamlit APP
 # ==============================
 # col_title, col_sheet_dropdown = st.columns([4, 1])
 # with col_title:
 #     st.markdown('<div class="main-title">🛡️ TPA Claims Review Portal</div>', unsafe_allow_html=True)
 
 #logo_path = r"C:\Users\LakshmiNarayanaCheru\OneDrive - ValueMomentum, Inc\Documents\Demos\Munichre_LossRunParser\Value_Momentum_logo_v01.jpg"
-logo_path = Image.open("Value_Momentum_logo_v01.jpg")
+# Load logo from project directory
+logo = Image.open("Value_Momentum_logo_v01.jpg")
 
-
+# Layout
 col_logo, col_title, col_sheet_dropdown = st.columns([0.6, 3.4, 1], gap="small")
 
 with col_logo:
-    if os.path.exists(logo_path):
-        st.markdown("<div style='padding-top:4px;'>", unsafe_allow_html=True)
-        st.image(logo_path, width=200)
-        st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("<div style='padding-top:4px;'>", unsafe_allow_html=True)
+    st.image(logo, width=200)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 with col_title:
     with col_title:
@@ -668,7 +668,7 @@ if uploaded:
     with col_nav:
         with st.container(height=600, border=False):
             st.markdown(
-                "<p style='color:#8b949e;font-weight:bold;font-size:12px;text-transform:uppercase;'>TPA Records</p>",
+                "<p style='color:#8b949e;font-weight:bold;font-size:12px;text-transform:uppercase;'>Claim Records</p>",
                 unsafe_allow_html=True,
             )
             for i, row_data in enumerate(data):
